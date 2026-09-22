@@ -101,6 +101,39 @@ const initializeTeachers = () => {
   });
 };
 
+
+const initializeStudents = () => {
+  db.query(`CREATE TABLE IF NOT EXISTS students (
+    student_id VARCHAR(30) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(120) NOT NULL UNIQUE,
+    phone VARCHAR(20) NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    department VARCHAR(20) NOT NULL,
+    semester INT NOT NULL,
+    admission_year INT NOT NULL,
+    admission_status VARCHAR(20) NOT NULL DEFAULT 'Pending',
+    date_of_birth DATE NULL,
+    gender VARCHAR(20) NULL,
+    address VARCHAR(255) NULL,
+    guardian_name VARCHAR(100) NULL,
+    guardian_phone VARCHAR(20) NULL,
+    qualification_12th VARCHAR(100) NULL,
+    board_12th VARCHAR(100) NULL,
+    marks_12th DECIMAL(5,2) NULL,
+    passing_year_12th INT NULL,
+    admission_submitted_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`, (error) => {
+    if (error) {
+      console.error("Student table setup failed:", error.message);
+    } else {
+      console.log("Student table is ready.");
+    }
+  });
+};
+
+
 const initializeResults = () => {
   db.query(`CREATE TABLE IF NOT EXISTS student_results (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -307,6 +340,7 @@ db.connect((err) => {
 
     console.log("MySQL connected successfully!");
     initializeTeachers();
+    initializeStudents();
     initializeResults();
     initializeAttendance();
     initializeTimetable();
