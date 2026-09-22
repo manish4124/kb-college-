@@ -1,0 +1,4 @@
+backend/.env
+frontend/dist/
+__pycache__/
+ai/__pycache__/
