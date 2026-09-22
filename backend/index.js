@@ -20,6 +20,7 @@ const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 const execFileAsync = promisify(execFile);
 const allowedOrigins = [
+  "https://kb-college-k2q0qj3ts-kb-college-bermo.vercel.app",
   process.env.CORS_ORIGIN,
   "http://localhost:5173",
   "http://127.0.0.1:5173",
