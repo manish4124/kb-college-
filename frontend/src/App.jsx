@@ -1775,8 +1775,7 @@ const registrationForm = (
             <p className="eyebrow">Established 1964</p>
             <h1>K.B. College, Bermo</h1>
             <p className="hero-text">
-              A focused digital portal for students, teachers, admissions,
-              results, fees, and college administration.
+              K.B. College, Bermo is a co-educational government constituent college in Jarangdih Colliery, Bokaro, Jharkhand, affiliated with Binod Bihari Mahto Koylanchal University, Dhanbad. Explore admissions, departments, notices, results, fees, facilities, and academic services.
             </p>
 
             <div className="hero-actions">
