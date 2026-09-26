@@ -42,13 +42,21 @@ app.use(cors({
 app.use(express.json());
 
 // MySQL connection
-const db = mysql.createConnection({
+const db = mysql.createPool({
     host: process.env.DB_HOST || "localhost",
     port: Number(process.env.DB_PORT) || 3306,
     user: process.env.DB_USER || "root",
     password: process.env.DB_PASSWORD || "",
-    database: process.env.DB_NAME || "KBCOLLEGE"
+    database: process.env.DB_NAME || "KBCOLLEGE",
+    ssl: {
+        rejectUnauthorized: false
+    },
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
 });
+
+
 const dbQuery = promisify(db.query).bind(db);
 
 db.on("error", (error) => {
@@ -334,23 +342,26 @@ const formatFeeRecord = (record) => {
 };
 
 // Test MySQL connection
-db.connect((err) => {
-    if (err) {
-        console.error("MySQL connection failed:", err.message);
-        return;
-    }
+// Test MySQL connection
+db.getConnection((err, connection) => {
+  if (err) {
+    console.error("MySQL connection failed:", err.message);
+    return;
+  }
 
-    console.log("MySQL connected successfully!");
-    initializeTeachers();
-    initializeStudents();
-    initializeResults();
-    initializeAttendance();
-    initializeTimetable();
-    initializeAdmissionStatus();
-    initializeAdmissionFields();
-    initializeFees();
-    initializeTcApplications();
-    initializeNotices();
+  console.log("MySQL connected successfully!");
+  connection.release();
+
+  initializeTeachers();
+  initializeStudents();
+  initializeResults();
+  initializeAttendance();
+  initializeTimetable();
+  initializeAdmissionStatus();
+  initializeAdmissionFields();
+  initializeFees();
+  initializeTcApplications();
+  initializeNotices();
 });
 
 // Home API
