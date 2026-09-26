@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://kb-college.vercel.app/sitemap.xml
+Sitemap: https://kb-college-bermo.web.app/sitemap.xml
