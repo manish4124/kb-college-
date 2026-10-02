@@ -17,7 +17,7 @@ const services = [
   ["TC Application", "Apply online for Transfer Certificate services.", "TC"],
 ];
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000";
+const API_URL = "https://kb-college.onrender.com";
 const bcaSubjects = [
   "Computer Fundamentals",
   "Programming in C",
@@ -178,6 +178,7 @@ const [paymentMessage, setPaymentMessage] = useState("");
 const [tcReason, setTcReason] = useState("");
 const [tcStudentMessage, setTcStudentMessage] = useState("");
 const [portalMode, setPortalMode] = useState(null);
+const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 const [teacherLoginData, setTeacherLoginData] = useState({ teacher_id: "", password: "" });
 const [teacherLoginMessage, setTeacherLoginMessage] = useState("");
 const [teacherPasswordResetData, setTeacherPasswordResetData] = useState({
@@ -271,7 +272,7 @@ useEffect(() => {
     window.removeEventListener("pageshow", scrollToCurrentTarget);
     window.clearTimeout(startupScroll);
   };
-}, [portalMode, activeService, teacherPanel, loggedInStudent?.student_id, loggedInTeacher?.teacher_id]);
+}, [portalMode, loggedInStudent?.student_id, loggedInTeacher?.teacher_id]);
 
 const remainingAmount = TOTAL_COURSE_FEE - amountPaid;
 const teacherResultTotal = bcaSubjects.reduce((total, subject) => total + (Number(teacherMarks[subject]) || 0), 0);
@@ -848,6 +849,7 @@ const updateAdmissionStatus = async (studentId, admission_status) => {
 };
 
 const openPortal = (mode) => {
+  setIsMobileNavOpen(false);
   setPortalMode(mode === "student" ? "student-choice" : mode);
 };
 
@@ -1743,13 +1745,26 @@ const registrationForm = (
           </span>
         </a>
 
-        <nav aria-label="Main navigation">
-          <a href="#home" onClick={(event) => handlePublicNavigation(event, "home")}>Home</a>
-          <a href="#about" onClick={(event) => handlePublicNavigation(event, "about")}>About</a>
-          <a href="#departments" onClick={(event) => handlePublicNavigation(event, "departments")}>Departments</a>
-          <a href="#services" onClick={(event) => handlePublicNavigation(event, "services")}>Services</a>
-          <a href="#admission" onClick={(event) => handlePublicNavigation(event, "admission")}>Admission</a>
-          <a href="#services" onClick={(event) => handlePublicNavigation(event, "services")}>More</a>
+        <button
+          className="mobile-nav-toggle"
+          type="button"
+          aria-label={isMobileNavOpen ? "Close navigation menu" : "Open navigation menu"}
+          aria-expanded={isMobileNavOpen}
+          aria-controls="main-navigation"
+          onClick={() => setIsMobileNavOpen((isOpen) => !isOpen)}
+        >
+          <span />
+          <span />
+          <span />
+        </button>
+
+        <nav id="main-navigation" className={`mobile-nav${isMobileNavOpen ? " is-open" : ""}`} aria-label="Main navigation">
+          <a href="#home" onClick={(event) => { setIsMobileNavOpen(false); handlePublicNavigation(event, "home"); }}>Home</a>
+          <a href="#about" onClick={(event) => { setIsMobileNavOpen(false); handlePublicNavigation(event, "about"); }}>About</a>
+          <a href="#departments" onClick={(event) => { setIsMobileNavOpen(false); handlePublicNavigation(event, "departments"); }}>Departments</a>
+          <a href="#services" onClick={(event) => { setIsMobileNavOpen(false); handlePublicNavigation(event, "services"); }}>Services</a>
+          <a href="#admission" onClick={(event) => { setIsMobileNavOpen(false); handlePublicNavigation(event, "admission"); }}>Admission</a>
+          <a href="#services" onClick={(event) => { setIsMobileNavOpen(false); handlePublicNavigation(event, "services"); }}>More</a>
         </nav>
       </header>
       {loggedInTeacher ? teacherDashboard : loggedInStudent ? studentDashboard : portalMode === "teacher" ? teacherLoginForm : portalMode === "student-choice" ? studentPortalChoice : portalMode === "student-login" ? loginForm : portalMode === "student-register" ? registrationForm : portalMode === "student-admission" ? admissionFormView : null}
