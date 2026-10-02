@@ -1,4 +1,9 @@
+.env
+.env.*
+!.env.example
 backend/.env
+frontend/.env
+node_modules/
 frontend/dist/
 __pycache__/
 ai/__pycache__/

@@ -1,20 +1,13 @@
 const express = require("express");
 const cors = require("cors");
 const mysql = require("mysql2");
-const fs = require("fs");
 const path = require("path");
+const dotenv = require("dotenv");
+const crypto = require("crypto");
 const { promisify } = require("util");
 const { execFile } = require("child_process");
 
-// Load local development variables without requiring an additional runtime
-// package. Existing environment variables always take precedence.
-const envPath = path.join(__dirname, ".env");
-if (fs.existsSync(envPath)) {
-  for (const line of fs.readFileSync(envPath, "utf8").split(/\r?\n/)) {
-    const match = line.match(/^\s*([A-Z][A-Z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, "");
-  }
-}
+dotenv.config({ path: path.join(__dirname, ".env") });
 
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
@@ -24,6 +17,8 @@ const allowedOrigins = [
   process.env.CORS_ORIGIN,
   "http://localhost:5173",
   "http://127.0.0.1:5173",
+  "http://localhost:5174",
+  "http://127.0.0.1:5174",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
    "https://kb-college.vercel.app",
@@ -59,6 +54,8 @@ const db = mysql.createPool({
 
 
 const dbQuery = promisify(db.query).bind(db);
+const promiseDb = db.promise();
+let feePaymentSchemaReady = false;
 
 db.on("error", (error) => {
   console.error("MySQL connection error:", error.message);
@@ -267,12 +264,39 @@ const initializeFees = () => {
       amount DECIMAL(10,2) NOT NULL,
       payment_date DATE NOT NULL,
       payment_status VARCHAR(20) NOT NULL DEFAULT 'Paid',
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      payment_method VARCHAR(40) NULL,
+      demo_request_id VARCHAR(80) NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY unique_demo_request_id (demo_request_id)
     )`, (paymentError) => {
       if (paymentError) return console.error("Fee payment setup failed:", paymentError.message);
-      db.query("INSERT IGNORE INTO student_fee_records (student_id, total_fee) SELECT student_id, 300000 FROM students", (seedError) => {
-        if (seedError) console.error("Fee record seed failed:", seedError.message);
-        else console.log("Student fee records are ready.");
+      db.query("SHOW COLUMNS FROM student_fee_payments", (columnsError, columns) => {
+        if (columnsError) return console.error("Fee payment schema check failed:", columnsError.message);
+        const existingColumns = new Set(columns.map((column) => column.Field));
+        const missingColumns = [
+          ["payment_method", "VARCHAR(40) NULL"],
+          ["demo_request_id", "VARCHAR(80) NULL"],
+        ].filter(([name]) => !existingColumns.has(name));
+        const ensureDemoRequestIndex = () => db.query("SHOW INDEX FROM student_fee_payments", (indexesError, indexes) => {
+          if (indexesError) return console.error("Fee payment index check failed:", indexesError.message);
+          const hasDemoRequestIndex = indexes.some((index) => index.Key_name === "unique_demo_request_id");
+          const finishSetup = (migrationError) => {
+            if (migrationError) return console.error("Fee payment index migration failed:", migrationError.message);
+            db.query("INSERT IGNORE INTO student_fee_records (student_id, total_fee) SELECT student_id, 300000 FROM students", (seedError) => {
+              if (seedError) return console.error("Fee record seed failed:", seedError.message);
+              feePaymentSchemaReady = true;
+              console.log("Student fee records are ready.");
+            });
+          };
+          if (hasDemoRequestIndex) return finishSetup();
+          db.query("ALTER TABLE student_fee_payments ADD UNIQUE INDEX unique_demo_request_id (demo_request_id)", finishSetup);
+        });
+        if (missingColumns.length === 0) return ensureDemoRequestIndex();
+        const additions = missingColumns.map(([name, type]) => `ADD COLUMN ${name} ${type}`).join(", ");
+        db.query(`ALTER TABLE student_fee_payments ${additions}`, (migrationError) => {
+          if (migrationError) return console.error("Fee payment column migration failed:", migrationError.message);
+          ensureDemoRequestIndex();
+        });
       });
     });
   });
@@ -859,6 +883,7 @@ app.get("/api/students/:studentId/timetable", (req, res) => {
 });
 
 app.get("/api/students/:studentId/fees", (req, res) => {
+  if (!feePaymentSchemaReady) return res.status(503).json({ success: false, message: "Fee payment setup is not ready. Please try again shortly." });
   const recordSql = `
     SELECT s.student_id, COALESCE(f.total_fee, 300000) AS total_fee,
       COALESCE((SELECT SUM(p.amount) FROM student_fee_payments p WHERE p.student_id = s.student_id), 0) AS paid
@@ -868,7 +893,7 @@ app.get("/api/students/:studentId/fees", (req, res) => {
     if (recordError) return res.status(500).json({ success: false, message: "Unable to load fee details." });
     if (records.length === 0) return res.status(404).json({ success: false, message: "Student fee record not found." });
     db.query(
-      "SELECT receipt_no AS id, amount, DATE_FORMAT(payment_date, '%d-%b-%Y') AS date, payment_status AS status FROM student_fee_payments WHERE student_id = ? ORDER BY payment_date DESC, id DESC",
+      "SELECT receipt_no AS id, receipt_no, amount, DATE_FORMAT(payment_date, '%d-%b-%Y') AS date, payment_status AS status, payment_method FROM student_fee_payments WHERE student_id = ? ORDER BY payment_date DESC, id DESC",
       [req.params.studentId],
       (paymentError, payments) => {
         if (paymentError) return res.status(500).json({ success: false, message: "Unable to load payment history." });
@@ -879,18 +904,103 @@ app.get("/api/students/:studentId/fees", (req, res) => {
   });
 });
 
-app.post("/api/students/:studentId/fees/payments", (req, res) => {
-  const amount = Number(req.body.amount);
-  if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ success: false, message: "A valid payment amount is required." });
-  const receiptNo = `KB${Date.now().toString().slice(-8)}`;
-  db.query(
-    "INSERT INTO student_fee_payments (student_id, receipt_no, amount, payment_date, payment_status) VALUES (?, ?, ?, CURDATE(), 'Paid')",
-    [req.params.studentId, receiptNo, amount],
-    (error) => {
-      if (error) return res.status(500).json({ success: false, message: "Unable to record payment." });
-      res.status(201).json({ success: true, message: "Payment recorded successfully.", receipt_no: receiptNo });
+const SEMESTER_FEE = 50000;
+const allowedDemoPaymentMethods = ["UPI", "Debit Card", "Credit Card", "Net Banking"];
+
+app.post("/api/students/:studentId/fees/payments", async (req, res) => {
+  if (!feePaymentSchemaReady) return res.status(503).json({ success: false, message: "Fee payment setup is not ready. Please try again shortly." });
+
+  const { amount: requestedAmount, payment_method: paymentMethod, demo_request_id: demoRequestId } = req.body || {};
+  if (!allowedDemoPaymentMethods.includes(paymentMethod)) {
+    return res.status(400).json({ success: false, message: "Select a valid demo payment method." });
+  }
+  if (typeof demoRequestId !== "string" || !/^[a-f0-9-]{36}$/i.test(demoRequestId)) {
+    return res.status(400).json({ success: false, message: "A valid demo payment request ID is required." });
+  }
+
+  let connection;
+  let transactionStarted = false;
+  try {
+    connection = await promiseDb.getConnection();
+    await connection.beginTransaction();
+    transactionStarted = true;
+
+    const [students] = await connection.query(
+      `SELECT s.student_id, COALESCE(f.total_fee, 300000) AS total_fee
+       FROM students s LEFT JOIN student_fee_records f ON f.student_id = s.student_id
+       WHERE s.student_id = ? FOR UPDATE`,
+      [req.params.studentId]
+    );
+    if (students.length === 0) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(404).json({ success: false, message: "Student fee record not found." });
     }
-  );
+
+    const [existingPayments] = await connection.query(
+      `SELECT student_id, receipt_no, amount, payment_status AS status,
+        DATE_FORMAT(payment_date, '%d-%b-%Y') AS date, payment_method
+       FROM student_fee_payments WHERE demo_request_id = ? FOR UPDATE`,
+      [demoRequestId]
+    );
+    if (existingPayments.length > 0) {
+      const existing = existingPayments[0];
+      if (existing.student_id !== req.params.studentId) {
+        await connection.rollback();
+        transactionStarted = false;
+        return res.status(409).json({ success: false, message: "This demo payment request has already been used." });
+      }
+      await connection.commit();
+      transactionStarted = false;
+      return res.json({ success: true, duplicate: true, ...existing, amount: Number(existing.amount) });
+    }
+
+    const [paidRows] = await connection.query(
+      "SELECT COALESCE(SUM(amount), 0) AS paid FROM student_fee_payments WHERE student_id = ?",
+      [req.params.studentId]
+    );
+    const totalFee = Number(students[0].total_fee);
+    const amountPaid = Number(paidRows[0].paid || 0);
+    const remainingAmount = Math.max(totalFee - amountPaid, 0);
+    const allowedAmount = Math.min(SEMESTER_FEE, remainingAmount);
+    const allowedAmountInPaise = Math.round(allowedAmount * 100);
+    const requestedAmountInPaise = Math.round(Number(requestedAmount) * 100);
+
+    if (allowedAmountInPaise <= 0) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(400).json({ success: false, message: "There is no remaining fee to pay." });
+    }
+    if (!Number.isFinite(requestedAmountInPaise) || requestedAmountInPaise !== allowedAmountInPaise) {
+      await connection.rollback();
+      transactionStarted = false;
+      return res.status(400).json({ success: false, message: "Payment amount does not match the allowed demo installment." });
+    }
+
+    const receiptNo = `KBDEMO${Date.now()}${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
+    const [insertResult] = await connection.query(
+      `INSERT INTO student_fee_payments
+        (student_id, receipt_no, amount, payment_date, payment_status, payment_method, demo_request_id)
+       VALUES (?, ?, ?, CURDATE(), 'Paid', ?, ?)`,
+      [req.params.studentId, receiptNo, (allowedAmountInPaise / 100).toFixed(2), paymentMethod, demoRequestId]
+    );
+    const [savedPayments] = await connection.query(
+      `SELECT receipt_no, amount, payment_status AS status,
+        DATE_FORMAT(payment_date, '%d-%b-%Y') AS date, payment_method
+       FROM student_fee_payments WHERE id = ?`,
+      [insertResult.insertId]
+    );
+    await connection.commit();
+    transactionStarted = false;
+    res.status(201).json({ success: true, message: "Demo payment successful!", ...savedPayments[0], amount: Number(savedPayments[0].amount) });
+  } catch (error) {
+    if (connection && transactionStarted) await connection.rollback().catch(() => {});
+    console.error("Demo fee payment could not be recorded:", error.message);
+    if (error.code === "ER_DUP_ENTRY") return res.status(409).json({ success: false, message: "This demo payment request has already been recorded." });
+    res.status(500).json({ success: false, message: "Unable to record the demo payment." });
+  } finally {
+    connection?.release();
+  }
 });
 
 app.get("/api/students/:studentId/attendance/history", (req, res) => {
@@ -1136,6 +1246,7 @@ app.get("/api/teachers/fees", (req, res) => {
 });
 
 app.get("/api/teachers/fees/:studentId", (req, res) => {
+  if (!feePaymentSchemaReady) return res.status(503).json({ success: false, message: "Fee payment setup is not ready. Please try again shortly." });
   const recordSql = `
     SELECT s.student_id, s.name, s.email, s.phone, s.department, s.semester, s.admission_year,
       COALESCE(f.total_fee, 300000) AS total_fee,
@@ -1150,7 +1261,7 @@ app.get("/api/teachers/fees/:studentId", (req, res) => {
     if (records.length === 0) return res.status(404).json({ success: false, message: "Student fee record not found." });
 
     db.query(
-      `SELECT receipt_no, amount, payment_date, payment_status
+      `SELECT receipt_no, amount, payment_date, payment_status, payment_method
        FROM student_fee_payments WHERE student_id = ? ORDER BY payment_date DESC, id DESC`,
       [req.params.studentId],
       (paymentError, payments) => {

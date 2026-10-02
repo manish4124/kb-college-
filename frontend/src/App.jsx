@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
 const departments = [
@@ -17,7 +17,7 @@ const services = [
   ["TC Application", "Apply online for Transfer Certificate services.", "TC"],
 ];
 
-const API_URL = "https://kb-college.onrender.com";
+const API_URL = "http://localhost:5000";
 const bcaSubjects = [
   "Computer Fundamentals",
   "Programming in C",
@@ -48,6 +48,9 @@ const getGrade = (marks) => {
 };
 
 function App() {
+  const activeServiceRef = useRef(null);
+  const teacherPanelRef = useRef(null);
+  const paymentInFlightRef = useRef(false);
   const [student, setStudent] = useState({
   student_id: "",
   name: "",
@@ -175,6 +178,11 @@ const [academicCourses, setAcademicCourses] = useState([]);
 const [amountPaid, setAmountPaid] = useState(0);
 const [paymentHistory, setPaymentHistory] = useState([]);
 const [paymentMessage, setPaymentMessage] = useState("");
+const [paymentLoading, setPaymentLoading] = useState(false);
+const [paymentReceipt, setPaymentReceipt] = useState(null);
+const [demoPaymentOpen, setDemoPaymentOpen] = useState(false);
+const [paymentMethod, setPaymentMethod] = useState("UPI");
+const [demoBank, setDemoBank] = useState("Demo Bank");
 const [tcReason, setTcReason] = useState("");
 const [tcStudentMessage, setTcStudentMessage] = useState("");
 const [portalMode, setPortalMode] = useState(null);
@@ -273,6 +281,34 @@ useEffect(() => {
     window.clearTimeout(startupScroll);
   };
 }, [portalMode, loggedInStudent?.student_id, loggedInTeacher?.teacher_id]);
+
+useEffect(() => {
+  if (!loggedInStudent?.student_id || !activeService || !activeServiceRef.current) return;
+
+  const timer = window.setTimeout(() => {
+    activeServiceRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, 50);
+
+  return () => window.clearTimeout(timer);
+}, [activeService, loggedInStudent?.student_id]);
+
+useEffect(() => {
+  if (!loggedInTeacher?.teacher_id || !teacherPanel || teacherPanel === "overview" || !teacherPanelRef.current) {
+    return;
+  }
+
+  const timer = window.setTimeout(() => {
+    teacherPanelRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, 50);
+
+  return () => window.clearTimeout(timer);
+}, [teacherPanel, loggedInTeacher?.teacher_id]);
 
 const remainingAmount = TOTAL_COURSE_FEE - amountPaid;
 const teacherResultTotal = bcaSubjects.reduce((total, subject) => total + (Number(teacherMarks[subject]) || 0), 0);
@@ -1069,23 +1105,74 @@ const handleDownloadSyllabus = () => {
   URL.revokeObjectURL(url);
 };
 
-const handlePayNow = async () => {
-  if (remainingAmount <= 0) return;
+const handlePayNow = () => {
+  if (!loggedInStudent?.student_id || remainingAmount <= 0 || paymentLoading) return;
+  setPaymentMethod("UPI");
+  setDemoPaymentOpen(true);
+  setPaymentMessage("");
+  setPaymentReceipt(null);
+};
 
-  const payment = Math.min(SEMESTER_FEE, remainingAmount);
+const handleDemoPaymentSubmit = async (event) => {
+  event.preventDefault();
+  if (!loggedInStudent?.student_id || remainingAmount <= 0 || paymentInFlightRef.current) return;
+
+  paymentInFlightRef.current = true;
+  setPaymentLoading(true);
+  setPaymentMessage("Processing demo payment...");
+  const demoAmount = Math.min(SEMESTER_FEE, remainingAmount);
   try {
-    const response = await fetch(`${API_URL}/api/students/${encodeURIComponent(loggedInStudent.student_id)}/fees/payments`, {
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    if (Math.random() >= 0.95) {
+      setPaymentMessage("Demo payment failed. No real money has been charged.");
+      return;
+    }
+
+    const studentId = encodeURIComponent(loggedInStudent.student_id);
+    const response = await fetch(`${API_URL}/api/students/${studentId}/fees/payments`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount: payment }),
+      body: JSON.stringify({ amount: demoAmount, payment_method: paymentMethod, demo_request_id: crypto.randomUUID() }),
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.success) throw new Error(data.message || "Unable to record payment.");
+    if (!response.ok || !data.success) throw new Error(data.message || "Unable to record the demo payment.");
+
+    setDemoPaymentOpen(false);
+    setPaymentReceipt(data);
     await loadStudentFees(loggedInStudent);
-    setPaymentMessage(`${formatCurrency(payment)} payment recorded successfully.`);
+    setPaymentMessage(`Demo payment successful! Receipt: ${data.receipt_no}`);
   } catch (error) {
-    setPaymentMessage(error.message || "Unable to record payment.");
+    setPaymentMessage(error.message || "Unable to record the demo payment. No fee amount was changed.");
+  } finally {
+    paymentInFlightRef.current = false;
+    setPaymentLoading(false);
   }
+};
+
+const handleDownloadPaymentReceipt = () => {
+  if (!paymentReceipt) return;
+  const receiptText = [
+    "K.B. COLLEGE, BERMO",
+    "Fee Payment Receipt",
+    "",
+    `Student Name: ${loggedInStudent.name}`,
+    `Student ID: ${loggedInStudent.student_id}`,
+    `Department: ${loggedInStudent.department}`,
+    `Semester: ${loggedInStudent.semester}`,
+    `Amount Paid: ${formatCurrency(paymentReceipt.amount)}`,
+    `Payment Status: ${paymentReceipt.status}`,
+    `Payment Date: ${paymentReceipt.date}`,
+    `Receipt No: ${paymentReceipt.receipt_no}`,
+    `Payment Method: ${paymentReceipt.payment_method || "Not provided"}`,
+    "",
+    "DEMO PAYMENT - No real money was charged.",
+  ].join("\n");
+  const url = URL.createObjectURL(new Blob([receiptText], { type: "text/plain" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${paymentReceipt.receipt_no}-receipt.txt`;
+  link.click();
+  URL.revokeObjectURL(url);
 };
 
 const handleTcApplication = async (e) => {
@@ -1179,7 +1266,7 @@ const studentDashboard = loggedInStudent && (
     </section>
 
     {activeService === "results" && (
-      <section id="results-section" className="dashboard-card results-panel" aria-labelledby="results-title">
+      <section ref={activeServiceRef} id="results-section" className="dashboard-card results-panel" aria-labelledby="results-title">
         <div className="dashboard-section-heading">
           <div>
             <p className="eyebrow">Examination</p>
@@ -1221,7 +1308,7 @@ const studentDashboard = loggedInStudent && (
     )}
 
     {activeService === "fees" && (
-      <section id="fees-section" className="dashboard-card fees-panel" aria-labelledby="fees-title">
+      <section ref={activeServiceRef} id="fees-section" className="dashboard-card fees-panel" aria-labelledby="fees-title">
         <div className="dashboard-section-heading">
           <div><p className="eyebrow">Fee management</p><h2 id="fees-title">My fee details</h2></div>
           <button className="close-results" type="button" onClick={() => setActiveService(null)}>Close</button>
@@ -1232,24 +1319,66 @@ const studentDashboard = loggedInStudent && (
           <article className="paid-fee"><span>Amount paid</span><strong>{formatCurrency(amountPaid)}</strong><small>Payments recorded this session</small></article>
           <article className="due-fee"><span>Remaining amount</span><strong>{formatCurrency(remainingAmount)}</strong><small>Balance for complete course</small></article>
         </div>
+        <div className="demo-mode-banner" role="note">
+          <strong>DEMO PAYMENT — NO REAL MONEY</strong>
+          <span>This is a demonstration payment. No real money has been charged.</span>
+        </div>
         <div className="fee-action-bar">
           <div><span>Payment status</span><strong className={remainingAmount === 0 ? "payment-complete" : "payment-pending"}>{remainingAmount === 0 ? "Fully paid" : amountPaid > 0 ? "Partially paid" : "Payment pending"}</strong></div>
-          <button className="pay-now-button" type="button" onClick={handlePayNow} disabled={remainingAmount === 0}>{remainingAmount === 0 ? "Course fee paid" : `Pay now ${formatCurrency(Math.min(SEMESTER_FEE, remainingAmount))}`}</button>
+          <button className="pay-now-button" type="button" onClick={handlePayNow} disabled={remainingAmount === 0 || paymentLoading}>{remainingAmount === 0 ? "Course fee paid" : `Pay now ${formatCurrency(Math.min(SEMESTER_FEE, remainingAmount))}`}</button>
         </div>
         {paymentMessage && <p className="payment-message" role="status">{paymentMessage}</p>}
+        {paymentReceipt && <article className="payment-receipt" aria-label="Fee payment receipt">
+          <div className="receipt-heading"><div><p>K.B. COLLEGE, BERMO</p><h3>Fee Payment Receipt</h3></div><span>PAID · DEMO</span></div>
+          <dl className="receipt-details">
+            <div><dt>Student Name</dt><dd>{loggedInStudent.name}</dd></div>
+            <div><dt>Student ID</dt><dd>{loggedInStudent.student_id}</dd></div>
+            <div><dt>Department</dt><dd>{loggedInStudent.department}</dd></div>
+            <div><dt>Semester</dt><dd>{loggedInStudent.semester}</dd></div>
+            <div><dt>Amount Paid</dt><dd>{formatCurrency(paymentReceipt.amount)}</dd></div>
+            <div><dt>Payment Status</dt><dd>{paymentReceipt.status}</dd></div>
+            <div><dt>Payment Date</dt><dd>{paymentReceipt.date}</dd></div>
+            <div><dt>Receipt No</dt><dd>{paymentReceipt.receipt_no}</dd></div>
+            <div><dt>Payment Method</dt><dd>{paymentReceipt.payment_method}</dd></div>
+          </dl>
+          <button className="download-receipt-button" type="button" onClick={handleDownloadPaymentReceipt}>Download Receipt</button>
+        </article>}
         <div className="payment-history">
           <div className="history-heading"><h3>Payment history</h3><span>{paymentHistory.length} payment{paymentHistory.length === 1 ? "" : "s"}</span></div>
           {paymentHistory.length > 0 ? (
             <div className="history-list">
-              {paymentHistory.map((payment) => <div className="history-item" key={payment.id}><div><strong>{payment.id}</strong><span>{payment.date}</span></div><b>{formatCurrency(payment.amount)}</b><em>{payment.status}</em></div>)}
+              {paymentHistory.map((payment) => <div className="history-item" key={payment.id}><div><strong>{payment.receipt_no || payment.id}</strong><span>{payment.date}</span><span>Method: {payment.payment_method || "Previously recorded"}</span></div><b>{formatCurrency(payment.amount)}</b><em>{payment.status}</em></div>)}
             </div>
           ) : <p className="no-payment-history">No payments have been recorded yet.</p>}
         </div>
+        {demoPaymentOpen && <div className="demo-payment-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !paymentLoading) setDemoPaymentOpen(false); }}>
+          <section className="demo-payment-modal" role="dialog" aria-modal="true" aria-labelledby="demo-payment-title">
+            <button className="demo-payment-close" type="button" aria-label="Close demo payment" disabled={paymentLoading} onClick={() => setDemoPaymentOpen(false)}>×</button>
+            <p className="demo-payment-badge">DEMO PAYMENT — NO REAL MONEY</p>
+            <h2 id="demo-payment-title">K.B. College Demo Payment</h2>
+            <p className="demo-payment-disclaimer">This is a demonstration payment. No real money has been charged.</p>
+            <form onSubmit={handleDemoPaymentSubmit}>
+              <div className="demo-payment-methods" role="group" aria-label="Demo payment method">
+                {["UPI", "Debit Card", "Credit Card", "Net Banking"].map((method) => <button key={method} type="button" className={paymentMethod === method ? "selected" : ""} aria-pressed={paymentMethod === method} onClick={() => setPaymentMethod(method)} disabled={paymentLoading}>{method}</button>)}
+              </div>
+              {paymentMethod === "UPI" && <label className="demo-payment-field"><span>Demo UPI ID</span><input value="test@upi" readOnly /></label>}
+              {(paymentMethod === "Debit Card" || paymentMethod === "Credit Card") && <div className="demo-payment-card-fields">
+                <label className="demo-payment-field"><span>Cardholder Name</span><input value={loggedInStudent.name} readOnly /></label>
+                <label className="demo-payment-field"><span>Demo Card Number</span><input value="DEMO-0000-0000-0000" readOnly /></label>
+                <label className="demo-payment-field"><span>Expiry</span><input value="12/30 (demo)" readOnly /></label>
+              </div>}
+              {paymentMethod === "Net Banking" && <label className="demo-payment-field"><span>Demo Bank</span><select value={demoBank} onChange={(event) => setDemoBank(event.target.value)} disabled={paymentLoading}><option>Demo Bank</option><option>Example National Bank</option><option>College Test Bank</option></select></label>}
+              {paymentMessage === "Processing demo payment..." && <p className="demo-payment-processing" role="status">Processing demo payment...</p>}
+              {paymentMessage && paymentMessage !== "Processing demo payment..." && <p className="demo-payment-error" role="status">{paymentMessage}</p>}
+              <button className="demo-payment-submit" type="submit" disabled={paymentLoading}>{paymentLoading ? "Processing demo payment..." : `Pay ${formatCurrency(Math.min(SEMESTER_FEE, remainingAmount))}`}</button>
+            </form>
+          </section>
+        </div>}
       </section>
     )}
 
     {activeService === "notices" && (
-      <section className="dashboard-card notices-panel" aria-labelledby="notices-title">
+      <section ref={activeServiceRef} className="dashboard-card notices-panel" aria-labelledby="notices-title">
         <div className="dashboard-section-heading">
           <div><p className="eyebrow">College updates</p><h2 id="notices-title">Latest notices</h2></div>
           <button className="close-results" type="button" onClick={() => setActiveService(null)}>Close</button>
@@ -1267,7 +1396,7 @@ const studentDashboard = loggedInStudent && (
       </section>
     )}
     {activeService === "assistant" && (
-      <section className="dashboard-card assistant-panel" aria-labelledby="assistant-title">
+      <section ref={activeServiceRef} className="dashboard-card assistant-panel" aria-labelledby="assistant-title">
         <div className="dashboard-section-heading"><div><p className="eyebrow">AI student support</p><h2 id="assistant-title">College Assistant</h2></div><button className="close-results" type="button" onClick={() => setActiveService(null)}>Close</button></div>
         <p className="prediction-intro">Ask about your attendance, next class, fee status, TC application, or published results.</p>
         <form className="assistant-form" onSubmit={askCollegeAssistant}><input value={assistantQuestion} onChange={(e) => setAssistantQuestion(e.target.value)} placeholder="e.g. What is my attendance?" aria-label="Question for the college assistant" /><button className="teacher-primary" type="submit" disabled={assistantLoading}>{assistantLoading ? "Checking..." : "Ask assistant"}</button></form>
@@ -1276,7 +1405,7 @@ const studentDashboard = loggedInStudent && (
       </section>
     )}
     {activeService === "admission-status" && (
-      <section className="dashboard-card status-panel" aria-labelledby="admission-status-title">
+      <section ref={activeServiceRef} className="dashboard-card status-panel" aria-labelledby="admission-status-title">
         <div className="dashboard-section-heading">
           <div><p className="eyebrow">Student services</p><h2 id="admission-status-title">Admission status</h2></div>
           <button className="close-results" type="button" onClick={() => setActiveService(null)}>Close</button>
@@ -1292,7 +1421,7 @@ const studentDashboard = loggedInStudent && (
     )}
 
     {activeService === "attendance" && (
-      <section className="dashboard-card status-panel" aria-labelledby="student-attendance-title">
+      <section ref={activeServiceRef} className="dashboard-card status-panel" aria-labelledby="student-attendance-title">
         <div className="dashboard-section-heading">
           <div><p className="eyebrow">Student services</p><h2 id="student-attendance-title">My attendance</h2></div>
           <button className="close-results" type="button" onClick={() => setActiveService(null)}>Close</button>
@@ -1305,7 +1434,7 @@ const studentDashboard = loggedInStudent && (
     )}
 
     {activeService === "tc" && (
-      <section className="dashboard-card tc-student-panel" aria-labelledby="tc-student-title">
+      <section ref={activeServiceRef} className="dashboard-card tc-student-panel" aria-labelledby="tc-student-title">
         <div className="dashboard-section-heading"><div><p className="eyebrow">Student services</p><h2 id="tc-student-title">Transfer certificate application</h2></div><button className="close-results" type="button" onClick={() => setActiveService(null)}>Close</button></div>
         <div className="tc-status-banner"><span>Application status</span><strong className={`admission-dashboard-status ${String(loggedInStudent.tc_status || "Not submitted").toLowerCase()}`}>{loggedInStudent.tc_status || "Not submitted"}</strong><small>{loggedInStudent.tc_status === "Approved" ? "Your request has been approved." : loggedInStudent.tc_status === "Rejected" ? "Please contact the college office for more information." : loggedInStudent.tc_status === "Pending" ? "Your request is awaiting teacher review." : "Submit a request for your transfer certificate."}</small></div>
         <p className="notices-intro">Submit a request for your transfer certificate. Your application will be reviewed by the college.</p>
@@ -1318,7 +1447,7 @@ const studentDashboard = loggedInStudent && (
     )}
 
     {activeService === "academic" && (
-      <section className="dashboard-card academic-panel" aria-labelledby="academic-title">
+      <section ref={activeServiceRef} className="dashboard-card academic-panel" aria-labelledby="academic-title">
         <div className="dashboard-section-heading">
           <div><p className="eyebrow">Academic overview</p><h2 id="academic-title">{loggedInStudent.department} academic details</h2></div>
           <button className="close-results" type="button" onClick={() => setActiveService(null)}>Close</button>
@@ -1384,7 +1513,7 @@ const teacherDashboard = loggedInTeacher && (
       </div>
     </section>
 
-    {teacherPanel === "fees-management" && <section className="dashboard-card teacher-panel fees-management-panel">
+    {teacherPanel === "fees-management" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel fees-management-panel">
       <div className="dashboard-section-heading">
         <div><p className="eyebrow">Fee management</p><h2>{selectedFeeStudent ? "Student payment history" : "Student fee records"}</h2></div>
         {selectedFeeStudent && <button className="close-results" type="button" onClick={() => setSelectedFeeStudent(null)}>Back to fee records</button>}
@@ -1397,13 +1526,13 @@ const teacherDashboard = loggedInTeacher && (
       </div> : feeRecords.length > 0 ? <div className="student-table-wrap"><table className="student-table fee-table"><thead><tr><th>Student</th><th>Department</th><th>Total fee</th><th>Fee paid</th><th>Remaining</th><th>Status</th><th>Action</th></tr></thead><tbody>{feeRecords.map((record) => <tr key={record.student_id}><td><b>{record.name}</b><small>{record.student_id}</small></td><td>{record.department}</td><td>{formatCurrency(record.total_fee)}</td><td>{formatCurrency(record.paid)}</td><td>{formatCurrency(record.remaining)}</td><td><span className={`admission-status ${record.status.toLowerCase()}`}>{record.status}</span></td><td><button className="view-student-button" type="button" onClick={() => viewFeeDetails(record.student_id)}>View</button></td></tr>)}</tbody></table></div> : <p className="directory-state">No student fee records found.</p>}
     </section>}
 
-    {teacherPanel === "ai-analytics" && <section className="dashboard-card teacher-panel analytics-panel">
+    {teacherPanel === "ai-analytics" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel analytics-panel">
       <div className="dashboard-section-heading"><div><p className="eyebrow">AI student analytics</p><h2>Early-warning dashboard</h2></div><button className="close-results" type="button" onClick={openAiAnalytics} disabled={aiAnalyticsLoading}>{aiAnalyticsLoading ? "Refreshing..." : "Refresh"}</button></div>
       {aiAnalyticsMessage && <p className="login-message">{aiAnalyticsMessage}</p>}
       {aiAnalyticsLoading ? <p className="directory-state">Analysing student data...</p> : aiAnalytics && <><div className="ai-metrics"><article><span>Students analyzed</span><strong>{aiAnalytics.summary.students_analyzed}</strong></article><article><span>Attendance risk</span><strong>{aiAnalytics.summary.attendance_risk}</strong><small>Below {aiAnalytics.thresholds.attendance_percentage}%</small></article><article><span>Performance risk</span><strong>{aiAnalytics.summary.performance_risk}</strong><small>Below {aiAnalytics.thresholds.performance_marks}%</small></article><article><span>Good performance</span><strong>{aiAnalytics.summary.good_performance}</strong></article><article><span>Needs attention</span><strong>{aiAnalytics.summary.needs_attention}</strong></article></div><div className="ai-insights"><h3>AI insights</h3><ul>{aiAnalytics.insights.map((insight) => <li key={insight}>{insight}</li>)}</ul></div>{aiAnalytics.risk_students.length > 0 && <div className="student-table-wrap"><table className="student-table"><thead><tr><th>Student</th><th>Department</th><th>Attendance</th><th>Average marks</th><th>Risk</th></tr></thead><tbody>{aiAnalytics.risk_students.map((student) => <tr key={student.student_id}><td><b>{student.name}</b><small>{student.student_id}</small></td><td>{student.department}</td><td>{student.attendance_percentage === null ? "Not recorded" : `${student.attendance_percentage}%`}</td><td>{student.average_marks === null ? "Not published" : `${student.average_marks}%`}</td><td><span className="student-status">{student.attendance_risk && student.performance_risk ? "Attendance + performance" : student.attendance_risk ? "Attendance" : "Performance"}</span></td></tr>)}</tbody></table></div>}</>}
     </section>}
 
-    {teacherPanel === "tc-applications" && <section className="dashboard-card teacher-panel tc-management-panel">
+    {teacherPanel === "tc-applications" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel tc-management-panel">
       <div className="dashboard-section-heading"><div><p className="eyebrow">Transfer certificate management</p><h2>{selectedTcApplication ? "TC application details" : "Pending TC requests"}</h2></div>{selectedTcApplication && <button className="close-results" type="button" onClick={() => setSelectedTcApplication(null)}>Back to requests</button>}</div>
       {tcMessage && <p className="login-message">{tcMessage}</p>}
       {tcLoading ? <p className="directory-state">Loading TC applications...</p> : selectedTcApplication ? <div className="tc-application-details">
@@ -1413,7 +1542,7 @@ const teacherDashboard = loggedInTeacher && (
       </div> : <><div className="admission-filter"><label>Show <select value={tcFilter} onChange={(e) => { const status = e.target.value; setTcFilter(status); loadTcApplications(status); }}><option>Pending</option><option>Approved</option><option>Rejected</option><option value="All">All requests</option></select></label><span>{tcApplications.length} request{tcApplications.length === 1 ? "" : "s"}</span></div>{tcApplications.length > 0 ? <div className="student-table-wrap"><table className="student-table tc-table"><thead><tr><th>TC ID</th><th>Student ID</th><th>Name</th><th>Department</th><th>Reason</th><th>Applied date</th><th>Status</th><th>Actions</th></tr></thead><tbody>{tcApplications.map((application) => <tr key={application.id}><td><b>TC-{String(application.id).padStart(4, "0")}</b></td><td>{application.student_id}</td><td>{application.name}</td><td>{application.department}</td><td>{application.reason}</td><td>{new Date(application.application_date).toLocaleDateString("en-IN")}</td><td><span className={`admission-status ${application.status.toLowerCase()}`}>{application.status}</span></td><td><div className="admission-actions"><button className="view-student-button" type="button" onClick={() => viewTcApplication(application.id)}>View</button>{application.status === "Pending" && <><button className="approve-button" type="button" onClick={() => updateTcStatus(application.id, "Approved")}>Approve</button><button className="reject-button" type="button" onClick={() => updateTcStatus(application.id, "Rejected")}>Reject</button></>}</div></td></tr>)}</tbody></table></div> : <p className="directory-state">No {tcFilter.toLowerCase()} TC requests found.</p>}</>}
     </section>}
 
-    {teacherPanel === "admissions" && <section className="dashboard-card teacher-panel admissions-panel">
+    {teacherPanel === "admissions" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel admissions-panel">
       <div className="dashboard-section-heading"><div><p className="eyebrow">Admission management</p><h2>{selectedApplication ? "Student application" : "Pending applications"}</h2></div>{selectedApplication && <button className="close-results" type="button" onClick={() => setSelectedApplication(null)}>Back to applications</button>}</div>
       {!selectedApplication ? <>
         <div className="admission-filter"><label>Show <select value={admissionFilter} onChange={(e) => { const status = e.target.value; setAdmissionFilter(status); loadAdmissions(status); }}><option>Pending</option><option>Approved</option><option>Rejected</option><option value="All">All applications</option></select></label><span>{admissionApplications.length} application{admissionApplications.length === 1 ? "" : "s"}</span></div>
@@ -1423,7 +1552,7 @@ const teacherDashboard = loggedInTeacher && (
       {admissionLoading && selectedApplication && <p className="directory-state">Loading application...</p>}
     </section>}
 
-    {teacherPanel === "results-management" && <section className="dashboard-card teacher-panel results-management-panel">
+    {teacherPanel === "results-management" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel results-management-panel">
       <div className="dashboard-section-heading"><div><p className="eyebrow">Results management</p><h2>Enter and publish results</h2></div><span>{existingResult ? "Editing published result" : "New result"}</span></div>
       <form onSubmit={handlePublishResult}>
         <div className="result-selection">
@@ -1436,7 +1565,7 @@ const teacherDashboard = loggedInTeacher && (
       </form>
     </section>}
 
-    {teacherPanel === "ai-prediction" && <section className="dashboard-card teacher-panel prediction-panel">
+    {teacherPanel === "ai-prediction" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel prediction-panel">
       <div className="dashboard-section-heading"><div><p className="eyebrow">AI/ML insight</p><h2>Student performance predictor</h2></div><span>Random forest model</span></div>
       <p className="prediction-intro">Enter the current academic indicators to receive an early performance category and a practical next step. This supports teacher judgement; it does not replace it.</p>
       <form className="assignment-form" onSubmit={handlePerformancePrediction}>
@@ -1451,7 +1580,7 @@ const teacherDashboard = loggedInTeacher && (
       {prediction && <section className={`prediction-result ${prediction.prediction.toLowerCase()}`} aria-live="polite"><span>Predicted performance</span><strong>{prediction.prediction}</strong><p>{prediction.confidence}% model confidence</p><small>{prediction.recommendation}</small></section>}
     </section>}
 
-    {teacherPanel === "students" && <section className="dashboard-card teacher-panel student-management-panel">
+    {teacherPanel === "students" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel student-management-panel">
       <div className="dashboard-section-heading">
         <div><p className="eyebrow">Student management</p><h2>{selectedStudent ? "Student details" : "Student directory"}</h2></div>
         {selectedStudent && <button className="close-results" type="button" onClick={() => setSelectedStudent(null)}>Back to directory</button>}
@@ -1471,13 +1600,13 @@ const teacherDashboard = loggedInTeacher && (
       {studentDetailsLoading && <p className="directory-state">Loading student details...</p>}
     </section>}
 
-    {teacherPanel === "classes" && <section className="dashboard-card teacher-panel"><div className="dashboard-section-heading"><div><p className="eyebrow">Timetable management</p><h2>Class schedule</h2></div></div>{timetableLoading && <p className="directory-state">Loading timetable...</p>}<form className="assignment-form timetable-form" onSubmit={handleAddTimetableClass}><div className="form-grid"><label className="form-field"><span>Department</span><select value={timetableForm.department} onChange={(e) => setTimetableForm({ ...timetableForm, department: e.target.value })}><option>BCA</option><option>B.A.</option><option>B.Sc.</option><option>BBA</option></select></label><label className="form-field"><span>Semester</span><select value={timetableForm.semester} onChange={(e) => setTimetableForm({ ...timetableForm, semester: e.target.value })}>{[1, 2, 3, 4, 5, 6].map((semester) => <option key={semester}>Semester {semester}</option>)}</select></label><label className="form-field"><span>Subject</span><input value={timetableForm.subject} onChange={(e) => setTimetableForm({ ...timetableForm, subject: e.target.value })} placeholder="e.g. Database Management" required /></label><label className="form-field"><span>Teacher</span><input value={timetableForm.teacher} onChange={(e) => setTimetableForm({ ...timetableForm, teacher: e.target.value })} placeholder="e.g. Dr. Rajesh Kumar" required /></label><label className="form-field"><span>Day</span><select value={timetableForm.day} onChange={(e) => setTimetableForm({ ...timetableForm, day: e.target.value })}><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option></select></label><label className="form-field"><span>Time</span><input value={timetableForm.time} onChange={(e) => setTimetableForm({ ...timetableForm, time: e.target.value })} placeholder="e.g. 10:00 - 11:00" required /></label><label className="form-field"><span>Room</span><input value={timetableForm.room} onChange={(e) => setTimetableForm({ ...timetableForm, room: e.target.value })} placeholder="e.g. 103" required /></label><label className="form-field"><span>Course code</span><input value={timetableForm.code} onChange={(e) => setTimetableForm({ ...timetableForm, code: e.target.value })} placeholder="e.g. BCA-204" required /></label><label className="form-field"><span>Students</span><input type="number" min="0" value={timetableForm.students} onChange={(e) => setTimetableForm({ ...timetableForm, students: e.target.value })} placeholder="e.g. 40" required /></label></div><button className="teacher-primary" type="submit" disabled={timetableLoading}>{timetableLoading ? "Saving..." : "Add Class Schedule"}</button></form>{timetableMessage && <p className="register-message" role="status">{timetableMessage}</p>}<div className="teacher-class-list">{timetableEntries.map((item, index) => <article key={`${item.id || item.code}-${index}`}><span className="course-code">{item.code || item.id}</span><div><h3>{item.subject}</h3><p>{item.department} · {item.semester} · {item.day}</p><small>Teacher: {item.teacher || "Assigned faculty"}</small></div><div><b>{item.time}</b><small>Room {item.room} · {item.students} students</small><button className="reject-button" type="button" onClick={() => handleDeleteTimetableClass(item.id)} disabled={timetableLoading}>Delete</button></div></article>)}</div></section>}
+    {teacherPanel === "classes" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel"><div className="dashboard-section-heading"><div><p className="eyebrow">Timetable management</p><h2>Class schedule</h2></div></div>{timetableLoading && <p className="directory-state">Loading timetable...</p>}<form className="assignment-form timetable-form" onSubmit={handleAddTimetableClass}><div className="form-grid"><label className="form-field"><span>Department</span><select value={timetableForm.department} onChange={(e) => setTimetableForm({ ...timetableForm, department: e.target.value })}><option>BCA</option><option>B.A.</option><option>B.Sc.</option><option>BBA</option></select></label><label className="form-field"><span>Semester</span><select value={timetableForm.semester} onChange={(e) => setTimetableForm({ ...timetableForm, semester: e.target.value })}>{[1, 2, 3, 4, 5, 6].map((semester) => <option key={semester}>Semester {semester}</option>)}</select></label><label className="form-field"><span>Subject</span><input value={timetableForm.subject} onChange={(e) => setTimetableForm({ ...timetableForm, subject: e.target.value })} placeholder="e.g. Database Management" required /></label><label className="form-field"><span>Teacher</span><input value={timetableForm.teacher} onChange={(e) => setTimetableForm({ ...timetableForm, teacher: e.target.value })} placeholder="e.g. Dr. Rajesh Kumar" required /></label><label className="form-field"><span>Day</span><select value={timetableForm.day} onChange={(e) => setTimetableForm({ ...timetableForm, day: e.target.value })}><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option></select></label><label className="form-field"><span>Time</span><input value={timetableForm.time} onChange={(e) => setTimetableForm({ ...timetableForm, time: e.target.value })} placeholder="e.g. 10:00 - 11:00" required /></label><label className="form-field"><span>Room</span><input value={timetableForm.room} onChange={(e) => setTimetableForm({ ...timetableForm, room: e.target.value })} placeholder="e.g. 103" required /></label><label className="form-field"><span>Course code</span><input value={timetableForm.code} onChange={(e) => setTimetableForm({ ...timetableForm, code: e.target.value })} placeholder="e.g. BCA-204" required /></label><label className="form-field"><span>Students</span><input type="number" min="0" value={timetableForm.students} onChange={(e) => setTimetableForm({ ...timetableForm, students: e.target.value })} placeholder="e.g. 40" required /></label></div><button className="teacher-primary" type="submit" disabled={timetableLoading}>{timetableLoading ? "Saving..." : "Add Class Schedule"}</button></form>{timetableMessage && <p className="register-message" role="status">{timetableMessage}</p>}<div className="teacher-class-list">{timetableEntries.map((item, index) => <article key={`${item.id || item.code}-${index}`}><span className="course-code">{item.code || item.id}</span><div><h3>{item.subject}</h3><p>{item.department} · {item.semester} · {item.day}</p><small>Teacher: {item.teacher || "Assigned faculty"}</small></div><div><b>{item.time}</b><small>Room {item.room} · {item.students} students</small><button className="reject-button" type="button" onClick={() => handleDeleteTimetableClass(item.id)} disabled={timetableLoading}>Delete</button></div></article>)}</div></section>}
 
-    {teacherPanel === "attendance" && <section className="dashboard-card teacher-panel"><div className="dashboard-section-heading"><div><p className="eyebrow">Daily attendance</p><h2>Mark attendance</h2></div><span>{new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</span></div>{attendanceLoading ? <p className="directory-state">Loading students...</p> : attendanceStudents.length > 0 ? <><div className="attendance-list">{attendanceStudents.map((student) => <label key={student.student_id}><span><b>{student.name}</b><small>{student.student_id} · {student.department}</small></span><select value={attendanceByStudent[student.student_id] || "Present"} onChange={(e) => setAttendanceByStudent({ ...attendanceByStudent, [student.student_id]: e.target.value })}><option>Present</option><option>Absent</option></select></label>)}</div><div className="teacher-result-summary"><button className="teacher-primary" type="button" onClick={handleRandomizeAttendance}>Randomize attendance</button><button className="teacher-primary" type="button" onClick={handleSaveAllAttendance} disabled={attendanceSaving}>{attendanceSaving ? "Saving..." : "Save attendance"}</button></div></> : <p className="directory-state">No students found.</p>}{attendanceMessage && <p className="register-message" role="status">{attendanceMessage}</p>}</section>}
+    {teacherPanel === "attendance" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel"><div className="dashboard-section-heading"><div><p className="eyebrow">Daily attendance</p><h2>Mark attendance</h2></div><span>{new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</span></div>{attendanceLoading ? <p className="directory-state">Loading students...</p> : attendanceStudents.length > 0 ? <><div className="attendance-list">{attendanceStudents.map((student) => <label key={student.student_id}><span><b>{student.name}</b><small>{student.student_id} · {student.department}</small></span><select value={attendanceByStudent[student.student_id] || "Present"} onChange={(e) => setAttendanceByStudent({ ...attendanceByStudent, [student.student_id]: e.target.value })}><option>Present</option><option>Absent</option></select></label>)}</div><div className="teacher-result-summary"><button className="teacher-primary" type="button" onClick={handleRandomizeAttendance}>Randomize attendance</button><button className="teacher-primary" type="button" onClick={handleSaveAllAttendance} disabled={attendanceSaving}>{attendanceSaving ? "Saving..." : "Save attendance"}</button></div></> : <p className="directory-state">No students found.</p>}{attendanceMessage && <p className="register-message" role="status">{attendanceMessage}</p>}</section>}
 
-    {teacherPanel === "assignments" && <section className="dashboard-card teacher-panel"><div className="dashboard-section-heading"><div><p className="eyebrow">Course work</p><h2>Create an assignment</h2></div></div><form className="assignment-form" onSubmit={(e) => { e.preventDefault(); setAssignmentMessage(`“${assignment.title}” has been published for students.`); setAssignment({ title: "", dueDate: "" }); }}><label className="form-field"><span>Assignment title</span><input value={assignment.title} onChange={(e) => setAssignment({ ...assignment, title: e.target.value })} placeholder="e.g. C programming fundamentals" required /></label><label className="form-field"><span>Due date</span><input type="date" value={assignment.dueDate} onChange={(e) => setAssignment({ ...assignment, dueDate: e.target.value })} required /></label><button className="teacher-primary" type="submit">Publish assignment</button></form>{assignmentMessage && <p className="register-message">{assignmentMessage}</p>}</section>}
+    {teacherPanel === "assignments" && <section ref={teacherPanelRef} className="dashboard-card teacher-panel"><div className="dashboard-section-heading"><div><p className="eyebrow">Course work</p><h2>Create an assignment</h2></div></div><form className="assignment-form" onSubmit={(e) => { e.preventDefault(); setAssignmentMessage(`“${assignment.title}” has been published for students.`); setAssignment({ title: "", dueDate: "" }); }}><label className="form-field"><span>Assignment title</span><input value={assignment.title} onChange={(e) => setAssignment({ ...assignment, title: e.target.value })} placeholder="e.g. C programming fundamentals" required /></label><label className="form-field"><span>Due date</span><input type="date" value={assignment.dueDate} onChange={(e) => setAssignment({ ...assignment, dueDate: e.target.value })} required /></label><button className="teacher-primary" type="submit">Publish assignment</button></form>{assignmentMessage && <p className="register-message">{assignmentMessage}</p>}</section>}
 
-    {teacherPanel === "notices" && <section className="dashboard-card notices-panel"><div className="dashboard-section-heading"><div><p className="eyebrow">College updates</p><h2>Notice management</h2></div></div><form className="assignment-form notice-form" onSubmit={handlePublishNotice}><label className="form-field"><span>Notice title</span><input value={noticeForm.title} onChange={(e) => setNoticeForm({ ...noticeForm, title: e.target.value })} placeholder="e.g. Semester examination form submission" required /></label><label className="form-field"><span>Notice content</span><textarea value={noticeForm.content} onChange={(e) => setNoticeForm({ ...noticeForm, content: e.target.value })} placeholder="Write the notice details" rows="4" required /></label><div className="form-grid"><label className="form-field"><span>Category</span><select value={noticeForm.category} onChange={(e) => setNoticeForm({ ...noticeForm, category: e.target.value })}><option>College</option><option>Exam</option><option>Admission</option><option>Fees</option></select></label><label className="form-field"><span>Priority</span><select value={noticeForm.priority} onChange={(e) => setNoticeForm({ ...noticeForm, priority: e.target.value })}><option>Important</option><option>Priority</option><option>General</option></select></label></div><button className="teacher-primary" type="submit">{editingNoticeId ? "Update Notice" : "Publish Notice"}</button>{editingNoticeId && <button className="clear-search" type="button" onClick={() => { setEditingNoticeId(null); setNoticeForm({ title: "", content: "", category: "College", priority: "Important" }); }}>Cancel edit</button>}</form>{noticeMessage && <p className="register-message" role="status">{noticeMessage}</p>}<div className="notices-list"><div className="academic-block-heading"><h3>Latest notices</h3><span>College updates</span></div>{notices.map((notice) => <article className="notice-item" key={notice.id}><div className={`notice-category ${notice.category.toLowerCase()}`}>{notice.category}</div><div className="notice-content"><h3>{notice.title}</h3>{notice.content && <p>{notice.content}</p>}<time dateTime={notice.dateISO}>Published: {notice.date}</time></div><span className={`priority-label ${notice.priority.toLowerCase()}`}>{notice.priority}</span><div className="admission-actions"><button className="view-student-button" type="button" onClick={() => handleEditNotice(notice)}>Edit</button><button className="reject-button" type="button" onClick={() => handleDeleteNotice(notice.id)}>Delete</button></div></article>)}</div></section>}
+    {teacherPanel === "notices" && <section ref={teacherPanelRef} className="dashboard-card notices-panel"><div className="dashboard-section-heading"><div><p className="eyebrow">College updates</p><h2>Notice management</h2></div></div><form className="assignment-form notice-form" onSubmit={handlePublishNotice}><label className="form-field"><span>Notice title</span><input value={noticeForm.title} onChange={(e) => setNoticeForm({ ...noticeForm, title: e.target.value })} placeholder="e.g. Semester examination form submission" required /></label><label className="form-field"><span>Notice content</span><textarea value={noticeForm.content} onChange={(e) => setNoticeForm({ ...noticeForm, content: e.target.value })} placeholder="Write the notice details" rows="4" required /></label><div className="form-grid"><label className="form-field"><span>Category</span><select value={noticeForm.category} onChange={(e) => setNoticeForm({ ...noticeForm, category: e.target.value })}><option>College</option><option>Exam</option><option>Admission</option><option>Fees</option></select></label><label className="form-field"><span>Priority</span><select value={noticeForm.priority} onChange={(e) => setNoticeForm({ ...noticeForm, priority: e.target.value })}><option>Important</option><option>Priority</option><option>General</option></select></label></div><button className="teacher-primary" type="submit">{editingNoticeId ? "Update Notice" : "Publish Notice"}</button>{editingNoticeId && <button className="clear-search" type="button" onClick={() => { setEditingNoticeId(null); setNoticeForm({ title: "", content: "", category: "College", priority: "Important" }); }}>Cancel edit</button>}</form>{noticeMessage && <p className="register-message" role="status">{noticeMessage}</p>}<div className="notices-list"><div className="academic-block-heading"><h3>Latest notices</h3><span>College updates</span></div>{notices.map((notice) => <article className="notice-item" key={notice.id}><div className={`notice-category ${notice.category.toLowerCase()}`}>{notice.category}</div><div className="notice-content"><h3>{notice.title}</h3>{notice.content && <p>{notice.content}</p>}<time dateTime={notice.dateISO}>Published: {notice.date}</time></div><span className={`priority-label ${notice.priority.toLowerCase()}`}>{notice.priority}</span><div className="admission-actions"><button className="view-student-button" type="button" onClick={() => handleEditNotice(notice)}>Edit</button><button className="reject-button" type="button" onClick={() => handleDeleteNotice(notice.id)}>Delete</button></div></article>)}</div></section>}
   </main>
 );
 
